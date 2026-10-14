@@ -15,24 +15,50 @@ public sealed class AdminController : ControllerBase
 {
     private readonly ILibraryManager _libraryManager;
     private readonly IUserManager _userManager;
+    private readonly EffectiveConfig _settings;
 
-    public AdminController(ILibraryManager libraryManager, IUserManager userManager)
+    public AdminController(ILibraryManager libraryManager, IUserManager userManager, EffectiveConfig settings)
     {
         _libraryManager = libraryManager;
         _userManager = userManager;
+        _settings = settings;
     }
 
     // ─── Config ──────────────────────────────────────────────────────────────
 
+    /// <summary>The settings in use (from the managed file, if any) plus the plugin's state.</summary>
     [HttpGet("config")]
     [Authorize(Policy = "RequiresElevation")]
-    public IActionResult GetConfig() => Ok(Plugin.Instance!.Configuration);
+    public IActionResult GetConfig()
+    {
+        var c = Plugin.Instance!.Configuration;
+        var s = _settings.Get();
+        return Ok(new
+        {
+            s.PublicUrl,
+            s.LoginButtonText,
+            s.RequireGroupMapping,
+            s.Providers,
+            s.GroupMappings,
+            c.Links,
+            c.SeenGroups,
+            s.Managed,
+        });
+    }
 
     [HttpPost("config")]
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult SaveConfig([FromBody] PluginConfiguration config)
     {
-        Plugin.Instance!.UpdateConfiguration(config);
+        if (_settings.IsManaged)
+            return Conflict("The SSO settings are managed by a file (" + EffectiveConfig.EnvironmentVariable
+                + "); only account links can be changed here.");
+        // Links and seen groups are the plugin's own state: never replaced by a page save
+        // (a page opened earlier would drop the links made since).
+        var current = Plugin.Instance!.Configuration;
+        config.Links = current.Links;
+        config.SeenGroups = current.SeenGroups;
+        Plugin.Instance.UpdateConfiguration(config);
         return Ok();
     }
 

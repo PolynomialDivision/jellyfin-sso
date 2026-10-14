@@ -47,8 +47,8 @@ function setupTabs(view) {
             var name = tab.dataset.tab;
             tabs.forEach(function (t) { t.classList.toggle('is-active', t === tab); });
             panels.forEach(function (p) { p.hidden = (p.dataset.panel !== name); });
-            // Save applies to Provider + Group Mappings only.
-            saveBar.hidden = (name === 'links');
+            // Save applies to Provider + Group Mappings only, and not when a file manages them.
+            saveBar.hidden = (name === 'links') || !!(_config && _config.Managed);
         });
     });
 }
@@ -72,6 +72,16 @@ function load(view) {
         renderMappings(view, _config.GroupMappings || []);
         populateLinkForm(view);
         renderLinks(view);
+        if (_config.Managed) {
+            // Provider and mappings come from the managed file: show them, change nothing.
+            view.querySelector('#ManagedNote').hidden = false;
+            view.querySelector('#SaveBar').hidden = true;
+            view.querySelector('#AddMapping').hidden = true;
+            view.querySelectorAll('[data-panel="provider"] input, [data-panel="mappings"] input, '
+                + '[data-panel="mappings"] select, [data-panel="mappings"] button').forEach(function (el) {
+                el.disabled = true;
+            });
+        }
     });
 }
 

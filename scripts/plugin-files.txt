@@ -1,0 +1,9 @@
+Jellyfin.Plugin.Sso.dll
+IdentityModel.dll
+Microsoft.IdentityModel.Abstractions.dll
+Microsoft.IdentityModel.JsonWebTokens.dll
+Microsoft.IdentityModel.Logging.dll
+Microsoft.IdentityModel.Protocols.dll
+Microsoft.IdentityModel.Protocols.OpenIdConnect.dll
+Microsoft.IdentityModel.Tokens.dll
+System.IdentityModel.Tokens.Jwt.dll

@@ -1,13 +1,14 @@
 using Jellyfin.Plugin.Sso.Configuration;
 using Jellyfin.Plugin.Sso.Oidc;
 using MediaBrowser.Controller.Library;
-using MediaBrowser.Model.Users;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Sso.Provisioning;
 
 public sealed class UserProvisioner
 {
+    private static readonly SemaphoreSlim CreateLock = new(1, 1);
+
     private readonly IUserManager _userManager;
     private readonly ILogger<UserProvisioner> _logger;
 
@@ -26,6 +27,21 @@ public sealed class UserProvisioner
         ProviderConfig provider,
         OidcIdentity identity,
         CancellationToken ct = default)
+    {
+        // One login at a time from here on: two first logins of the same person must not
+        // create two users (or two links).
+        await CreateLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await ResolveLockedAsync(provider, identity).ConfigureAwait(false);
+        }
+        finally
+        {
+            CreateLock.Release();
+        }
+    }
+
+    private async Task<(Guid UserId, string Username)> ResolveLockedAsync(ProviderConfig provider, OidcIdentity identity)
     {
         var config = Plugin.Instance!.Configuration;
 
@@ -69,15 +85,15 @@ public sealed class UserProvisioner
         _logger.LogInformation("SSO JIT: creating new Jellyfin user '{Name}'.", identity.PreferredUsername);
         var newUser = await _userManager.CreateUserAsync(identity.PreferredUsername).ConfigureAwait(false);
 
-        // Set auth provider so the user can only log in via SSO.
-        await _userManager.UpdatePolicyAsync(newUser.Id, new UserPolicy
-        {
-            AuthenticationProviderId = typeof(Auth.SsoAuthenticationProvider).FullName,
-            PasswordResetProviderId = "Emby.Server.Implementations.Library.DefaultPasswordResetProvider",
-            EnableAllFolders = false,
-            EnabledFolders = [],
-            IsAdministrator = false,
-        }).ConfigureAwait(false);
+        // Start from Jellyfin's defaults for a new user and change only what SSO owns: the
+        // login goes through SSO, no admin and no library until the group sync decides.
+        var policy = _userManager.GetUserDto(newUser).Policy
+            ?? throw new InvalidOperationException("The new Jellyfin user has no policy.");
+        policy.AuthenticationProviderId = typeof(Auth.SsoAuthenticationProvider).FullName!;
+        policy.IsAdministrator = false;
+        policy.EnableAllFolders = false;
+        policy.EnabledFolders = [];
+        await _userManager.UpdatePolicyAsync(newUser.Id, policy).ConfigureAwait(false);
 
         // Store the link.
         config.Links.Add(new LinkConfig
@@ -86,14 +102,6 @@ public sealed class UserProvisioner
             Sub = identity.Sub,
             JellyfinUserId = newUser.Id,
         });
-
-        // Record any new groups for autocomplete.
-        var newGroups = identity.Groups.Except(config.SeenGroups, StringComparer.Ordinal).ToList();
-        if (newGroups.Count > 0)
-        {
-            config.SeenGroups.AddRange(newGroups);
-        }
-
         Plugin.Instance.SaveConfiguration();
 
         return (newUser.Id, newUser.Username);

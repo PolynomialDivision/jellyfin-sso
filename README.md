@@ -1,5 +1,7 @@
 # Jellyfin SSO Authentication Plugin
 
+> **House fork** (branch `house`): security fixes and managed settings, see [HOUSE.md](HOUSE.md).
+
 OIDC/OAuth2 single sign-on for Jellyfin with **group-based library access**, built for
 **Authentik** and **Authelia**. Replaces the deprecated [9p4/jellyfin-plugin-sso](https://github.com/9p4/jellyfin-plugin-sso).
 
@@ -198,8 +200,8 @@ account that existed before SSO:
   const PROVIDER = 'authentik';
   ```
 
-Native apps: `/sso/oidc/start/qc?code=<quickConnectCode>` (requires Quick Connect enabled
-server-side).
+Native apps: open `/sso/oidc/start/qc`, log in, then type the code the app shows (requires
+Quick Connect enabled server-side). A code in the link is refused (house fork, see HOUSE.md).
 
 ---
 

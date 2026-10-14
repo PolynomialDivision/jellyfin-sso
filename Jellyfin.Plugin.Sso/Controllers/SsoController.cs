@@ -1,12 +1,16 @@
+using System.Net;
 using IdentityModel.Client;
 using Jellyfin.Plugin.Sso.Auth;
 using Jellyfin.Plugin.Sso.Configuration;
 using Jellyfin.Plugin.Sso.Oidc;
 using Jellyfin.Plugin.Sso.Provisioning;
+using MediaBrowser.Common.Extensions;
+using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.QuickConnect;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.Tokens;
 
 namespace Jellyfin.Plugin.Sso.Controllers;
 
@@ -20,6 +24,8 @@ public sealed class SsoController : ControllerBase
     private readonly UserProvisioner _provisioner;
     private readonly PermissionSync _permissions;
     private readonly EphemeralSecretStore _secrets;
+    private readonly QuickConnectApprovalStore _approvals;
+    private readonly EffectiveConfig _settings;
     private readonly IQuickConnect _quickConnect;
     private readonly ILogger<SsoController> _logger;
 
@@ -30,6 +36,8 @@ public sealed class SsoController : ControllerBase
         UserProvisioner provisioner,
         PermissionSync permissions,
         EphemeralSecretStore secrets,
+        QuickConnectApprovalStore approvals,
+        EffectiveConfig settings,
         IQuickConnect quickConnect,
         ILogger<SsoController> logger)
     {
@@ -39,6 +47,8 @@ public sealed class SsoController : ControllerBase
         _provisioner = provisioner;
         _permissions = permissions;
         _secrets = secrets;
+        _approvals = approvals;
+        _settings = settings;
         _quickConnect = quickConnect;
         _logger = logger;
     }
@@ -49,92 +59,76 @@ public sealed class SsoController : ControllerBase
 
     /// <summary>
     /// Stable entry point — auto-picks the single enabled provider.
-    /// Used by the JavaScript Injector button so the URL never changes.
+    /// Used by the login button so the URL never changes.
     /// </summary>
     [HttpGet("oidc/start")]
     [AllowAnonymous]
-    public async Task<IActionResult> StartDefault(CancellationToken ct)
+    public Task<IActionResult> StartDefault(CancellationToken ct)
     {
-        var provider = Plugin.Instance?.Configuration.Providers.FirstOrDefault(p => p.Enabled);
-        if (provider is null)
-            return NotFound("No enabled SSO provider configured.");
-        return await Start(provider.Id, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>Same but for Quick Connect — stable entry point for native apps.</summary>
-    [HttpGet("oidc/start/qc")]
-    [AllowAnonymous]
-    public async Task<IActionResult> StartDefaultQuickConnect(
-        [FromQuery] string code, CancellationToken ct)
-    {
-        var provider = Plugin.Instance?.Configuration.Providers.FirstOrDefault(p => p.Enabled);
-        if (provider is null)
-            return NotFound("No enabled SSO provider configured.");
-        return await StartWithQuickConnect(provider.Id, code, ct).ConfigureAwait(false);
+        var provider = _settings.Get().Providers.FirstOrDefault(p => p.Enabled);
+        return provider is null
+            ? Task.FromResult<IActionResult>(NotFound("No enabled SSO provider configured."))
+            : StartFlow(provider.Id, quickConnect: false, ct);
     }
 
     [HttpGet("oidc/start/{providerId}")]
     [AllowAnonymous]
-    public async Task<IActionResult> Start(string providerId, CancellationToken ct)
+    public Task<IActionResult> Start(string providerId, CancellationToken ct)
+        => StartFlow(providerId, quickConnect: false, ct);
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Quick Connect path: log in here, then type the code the app shows
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Quick Connect for native apps: the IdP login, then a form for the device's code.</summary>
+    [HttpGet("oidc/start/qc")]
+    [AllowAnonymous]
+    public Task<IActionResult> StartDefaultQuickConnect([FromQuery] string? code, CancellationToken ct)
     {
-        var provider = GetEnabledProvider(providerId);
-        if (provider is null)
-            return NotFound($"Provider '{providerId}' not found or not enabled.");
-
-        var redirectUri = BuildCallbackUri(providerId);
-        var (state, pending) = _states.Issue(provider.Id, redirectUri);
-
-        var disco = await _oidc.GetDiscoveryDocumentAsync(provider, ct).ConfigureAwait(false);
-
-        var authorizeUrl = new RequestUrl(disco.AuthorizeEndpoint
-            ?? throw new InvalidOperationException("Discovery document has no authorize endpoint."))
-            .CreateAuthorizeUrl(
-                clientId: provider.ClientId,
-                responseType: "code",
-                scope: string.Join(' ', provider.Scopes),
-                redirectUri: redirectUri,
-                state: state,
-                nonce: pending.Nonce,
-                codeChallenge: PendingStateStore.CodeChallenge(pending.CodeVerifier),
-                codeChallengeMethod: "S256");
-
-        return Redirect(authorizeUrl);
+        if (code is not null)
+            return Task.FromResult(CodeInLink());
+        var provider = _settings.Get().Providers.FirstOrDefault(p => p.Enabled);
+        return provider is null
+            ? Task.FromResult<IActionResult>(NotFound("No enabled SSO provider configured."))
+            : StartFlow(provider.Id, quickConnect: true, ct);
     }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Quick Connect path: native app initiates QC, browser completes OIDC here
-    // ──────────────────────────────────────────────────────────────────────────
 
     [HttpGet("oidc/start/{providerId}/qc")]
     [AllowAnonymous]
-    public async Task<IActionResult> StartWithQuickConnect(
-        string providerId, [FromQuery] string code, CancellationToken ct)
+    public Task<IActionResult> StartWithQuickConnect(string providerId, [FromQuery] string? code, CancellationToken ct)
+        => code is not null ? Task.FromResult(CodeInLink()) : StartFlow(providerId, quickConnect: true, ct);
+
+    /// <summary>The form of the Quick Connect page: the approval token and the typed code.</summary>
+    [HttpPost("oidc/quickconnect")]
+    [AllowAnonymous]
+    [Consumes("application/x-www-form-urlencoded")]
+    public async Task<IActionResult> ApproveQuickConnect([FromForm] string? token, [FromForm] string? code)
     {
-        if (!_quickConnect.IsEnabled)
-            return BadRequest("Quick Connect is disabled on this server.");
+        var userId = _approvals.Consume(token);
+        if (userId is null)
+            return Page("Quick Connect", "<p>This page has expired. Start again from the app.</p>", HttpStatusCode.BadRequest);
+        var typed = (code ?? string.Empty).Trim();
+        if (typed.Length == 0 || typed.Length > 32)
+            return Page("Quick Connect", "<p>Please type the code your app shows. Start again from the app.</p>", HttpStatusCode.BadRequest);
 
-        var provider = GetEnabledProvider(providerId);
-        if (provider is null)
-            return NotFound($"Provider '{providerId}' not found or not enabled.");
+        bool authorized;
+        try
+        {
+            authorized = await _quickConnect.AuthorizeRequest(userId.Value, typed).ConfigureAwait(false);
+        }
+        // Jellyfin: ResourceNotFoundException for an unknown code, AuthenticationException for an
+        // expired one or Quick Connect switched off.
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or AuthenticationException
+                                       or ResourceNotFoundException)
+        {
+            _logger.LogInformation("SSO Quick Connect: code not accepted for user {Id}: {Message}", userId, ex.Message);
+            authorized = false;
+        }
 
-        var redirectUri = BuildCallbackUri(providerId);
-        var (state, pending) = _states.Issue(provider.Id, redirectUri, quickConnectCode: code);
-
-        var disco = await _oidc.GetDiscoveryDocumentAsync(provider, ct).ConfigureAwait(false);
-
-        var authorizeUrl = new RequestUrl(disco.AuthorizeEndpoint
-            ?? throw new InvalidOperationException("Discovery document has no authorize endpoint."))
-            .CreateAuthorizeUrl(
-                clientId: provider.ClientId,
-                responseType: "code",
-                scope: string.Join(' ', provider.Scopes),
-                redirectUri: redirectUri,
-                state: state,
-                nonce: pending.Nonce,
-                codeChallenge: PendingStateStore.CodeChallenge(pending.CodeVerifier),
-                codeChallengeMethod: "S256");
-
-        return Redirect(authorizeUrl);
+        return authorized
+            ? Page("Quick Connect", "<p>Login approved. You can close this tab and return to your app.</p>")
+            : Page("Quick Connect", "<p>That code is unknown or has expired. Start Quick Connect in the app again.</p>",
+                HttpStatusCode.BadRequest);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -145,24 +139,29 @@ public sealed class SsoController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> Callback(
         string providerId,
-        [FromQuery] string code,
-        [FromQuery] string state,
+        [FromQuery] string? code,
+        [FromQuery] string? state,
         [FromQuery] string? error,
         CancellationToken ct)
     {
+        // The state is consumed first, also when the IdP reports an error: one state, one try.
+        var pending = _states.Consume(state);
+
         if (!string.IsNullOrEmpty(error))
         {
             _logger.LogWarning("OIDC callback error for provider {Id}: {Error}", providerId, error);
-            return BadRequest($"IdP returned error: {error}");
+            return Failed("The login was cancelled or refused by the identity provider.");
         }
 
-        var pending = _states.Consume(state);
         if (pending is null)
-            return BadRequest("Invalid or expired state. Please try logging in again.");
+            return Failed("Invalid or expired login. Please try logging in again.");
+        if (string.IsNullOrEmpty(code))
+            return Failed("The identity provider sent no code.");
 
-        var provider = GetEnabledProvider(providerId);
+        var settings = _settings.Get();
+        var provider = GetEnabledProvider(settings, providerId);
         if (provider is null || provider.Id != pending.ProviderId)
-            return BadRequest("Provider mismatch.");
+            return Failed("Provider mismatch.");
 
         try
         {
@@ -174,25 +173,34 @@ public sealed class SsoController : ControllerBase
 
             var identity = await _claims.ExtractAsync(
                 provider, disco,
-                tokens.IdentityToken!, tokens.AccessToken!,
+                tokens.IdentityToken!, tokens.AccessToken,
                 pending.Nonce, ct)
                 .ConfigureAwait(false);
+
+            // Decide before anything is created or changed: no matching group, no account.
+            var access = AccessDecision.From(settings.GroupMappings, identity.Groups, settings.RequireGroupMapping);
+            if (!access.Allowed)
+            {
+                _logger.LogWarning("SSO login refused for sub={Sub} ({Name}): no group mapping matches {Groups}",
+                    identity.Sub, identity.PreferredUsername, string.Join(", ", identity.Groups));
+                return Failed("Your account has no access to this Jellyfin server.");
+            }
 
             var (userId, username) = await _provisioner.ResolveAsync(provider, identity, ct)
                 .ConfigureAwait(false);
 
-            await _permissions.SyncAsync(userId, identity, ct).ConfigureAwait(false);
+            await _permissions.SyncAsync(userId, identity, access, ct).ConfigureAwait(false);
 
-            if (pending.QuickConnectCode is not null)
-                return await CompleteQuickConnectAsync(userId, username, pending.QuickConnectCode, ct)
-                    .ConfigureAwait(false);
+            if (pending.QuickConnect)
+                return QuickConnectForm(_approvals.Issue(userId), username);
 
-            return await CompleteWebLoginAsync(username, ct).ConfigureAwait(false);
+            return CompleteWebLogin(username);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or SecurityTokenException or HttpRequestException
+                                       or FormatException)
         {
             _logger.LogWarning(ex, "SSO login failed for provider {Id}", providerId);
-            return BadRequest(ex.Message);
+            return Failed("The login could not be completed. Please try again; if it keeps failing, tell an administrator.");
         }
     }
 
@@ -241,7 +249,97 @@ public sealed class SsoController : ControllerBase
     // Helpers
     // ──────────────────────────────────────────────────────────────────────────
 
-    private Task<IActionResult> CompleteWebLoginAsync(string username, CancellationToken ct)
+    private async Task<IActionResult> StartFlow(string providerId, bool quickConnect, CancellationToken ct)
+    {
+        var settings = _settings.Get();
+        var provider = GetEnabledProvider(settings, providerId);
+        if (provider is null)
+            return NotFound("SSO provider not found or not enabled.");
+        if (quickConnect && !_quickConnect.IsEnabled)
+            return BadRequest("Quick Connect is disabled on this server.");
+
+        var redirectUri = CallbackUri(settings.PublicUrl, provider.Id);
+        if (redirectUri is null)
+        {
+            _logger.LogError("SSO: PublicUrl is not set; the login cannot start.");
+            return Failed("SSO is not configured completely (public URL missing).");
+        }
+
+        DiscoveryDocumentResponse disco;
+        try
+        {
+            disco = await _oidc.GetDiscoveryDocumentAsync(provider, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
+        {
+            _logger.LogWarning(ex, "SSO: discovery of provider {Id} failed", provider.Id);
+            return Failed("The identity provider is not reachable right now. Please try again later.");
+        }
+
+        var (state, pending) = _states.Issue(provider.Id, redirectUri, quickConnect);
+        var authorizeUrl = new RequestUrl(disco.AuthorizeEndpoint
+            ?? throw new InvalidOperationException("Discovery document has no authorize endpoint."))
+            .CreateAuthorizeUrl(
+                clientId: provider.ClientId,
+                responseType: "code",
+                scope: string.Join(' ', provider.Scopes),
+                redirectUri: redirectUri,
+                state: state,
+                nonce: pending.Nonce,
+                codeChallenge: PendingStateStore.CodeChallenge(pending.CodeVerifier),
+                codeChallengeMethod: "S256");
+
+        return Redirect(authorizeUrl);
+    }
+
+    /// <summary>
+    /// The callback URL from the configured public URL only. Host and X-Forwarded-* headers
+    /// are not used: they come from the client.
+    /// </summary>
+    internal static string? CallbackUri(string publicUrl, string providerId)
+        => string.IsNullOrWhiteSpace(publicUrl)
+            ? null
+            : $"{publicUrl.TrimEnd('/')}/sso/oidc/callback/{Uri.EscapeDataString(providerId)}";
+
+    private IActionResult CodeInLink()
+        => Page("Quick Connect",
+            "<p>For your safety, a Quick Connect code is never accepted from a link. "
+            + "Open <code>/sso/oidc/start/qc</code> yourself, log in, and type the code your app shows.</p>",
+            HttpStatusCode.BadRequest);
+
+    private IActionResult Failed(string message)
+        => Page("SSO Login", "<p>" + WebUtility.HtmlEncode(message) + "</p>", HttpStatusCode.BadRequest);
+
+    private IActionResult QuickConnectForm(string token, string username)
+        => Page("Quick Connect",
+            "<p>Signed in as <strong>" + WebUtility.HtmlEncode(username) + "</strong>.</p>"
+            + "<p>Type the code your app shows. Only enter a code from a device you are holding: "
+            + "it will be signed in as you.</p>"
+            + "<form method=\"post\" action=\"/sso/oidc/quickconnect\">"
+            + "<input type=\"hidden\" name=\"token\" value=\"" + WebUtility.HtmlEncode(token) + "\"/>"
+            + "<input name=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" autofocus required "
+            + "maxlength=\"32\" style=\"font-size:1.5em;width:8em;text-align:center\"/> "
+            + "<button type=\"submit\" style=\"font-size:1.2em\">Approve</button></form>");
+
+    private ContentResult Page(string title, string bodyHtml, HttpStatusCode status = HttpStatusCode.OK)
+    {
+        Response.Headers["Cache-Control"] = "no-store";
+        Response.Headers["Referrer-Policy"] = "no-referrer";
+        Response.Headers["X-Frame-Options"] = "DENY";
+        return new ContentResult
+        {
+            StatusCode = (int)status,
+            ContentType = "text/html; charset=utf-8",
+            Content = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/>"
+                + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
+                + "<title>" + WebUtility.HtmlEncode(title) + "</title>"
+                + "<style>body{font-family:system-ui,sans-serif;max-width:32em;margin:3em auto;padding:0 1em;"
+                + "background:#1c1c1c;color:#ddd}a{color:#00a4dc}</style></head><body>"
+                + "<h1>" + WebUtility.HtmlEncode(title) + "</h1>" + bodyHtml + "</body></html>",
+        };
+    }
+
+    private ContentResult CompleteWebLogin(string username)
     {
         var secret = _secrets.Issue(username);
 
@@ -308,7 +406,7 @@ public sealed class SsoController : ControllerBase
                 localStorage.setItem(credsKey, JSON.stringify(creds));
 
                 msg.textContent = 'Login successful — redirecting…';
-                window.location.href = '/web/index.html';
+                window.location.replace('/web/index.html');
               } catch(e) {
                 msg.textContent = 'SSO login failed: ' + e.message;
               }
@@ -317,50 +415,19 @@ public sealed class SsoController : ControllerBase
             </body></html>
             """;
 
-        return Task.FromResult<IActionResult>(Content(html, "text/html"));
+        // The page carries a one-time secret: never cached, never framed, no referrer.
+        Response.Headers["Cache-Control"] = "no-store";
+        Response.Headers["Referrer-Policy"] = "no-referrer";
+        Response.Headers["X-Frame-Options"] = "DENY";
+        return Content(html, "text/html; charset=utf-8");
     }
 
-    private async Task<IActionResult> CompleteQuickConnectAsync(
-        Guid userId, string username, string quickConnectCode, CancellationToken ct)
-    {
-        var authorized = await _quickConnect.AuthorizeRequest(userId, quickConnectCode)
-            .ConfigureAwait(false);
-
-        if (!authorized)
-            return BadRequest("Quick Connect authorization failed. The code may have expired.");
-
-        var html = """
-            <!DOCTYPE html><html><body>
-            <script>
-            document.body.innerText = 'Login approved! You can close this tab and return to your app.';
-            </script>
-            <p>Login approved. You can close this tab and return to your app.</p>
-            </body></html>
-            """;
-
-        return Content(html, "text/html");
-    }
-
-    private static ProviderConfig? GetEnabledProvider(string providerId)
-        => Plugin.Instance?.Configuration.Providers
+    private static ProviderConfig? GetEnabledProvider(SsoSettings settings, string providerId)
+        => settings.Providers
             .FirstOrDefault(p => p.Enabled &&
                 string.Equals(p.Id, providerId, StringComparison.Ordinal));
 
-    private string BuildCallbackUri(string providerId)
-    {
-        var req = HttpContext.Request;
-
-        // Honour reverse-proxy forwarded headers (Jellyfin runs behind HTTPS termination).
-        var scheme = req.Headers["X-Forwarded-Proto"].FirstOrDefault()
-            ?? req.Headers["X-Forwarded-Scheme"].FirstOrDefault()
-            ?? req.Scheme;
-
-        var host = req.Headers["X-Forwarded-Host"].FirstOrDefault()
-            ?? req.Host.ToString();
-
-        return $"{scheme}://{host}/sso/oidc/callback/{providerId}";
-    }
-
+    // System.Text.Json escapes <, >, & and quotes by default, so the value is safe inside <script>.
     private static string JsonEscape(string s)
         => System.Text.Json.JsonSerializer.Serialize(s);
 }

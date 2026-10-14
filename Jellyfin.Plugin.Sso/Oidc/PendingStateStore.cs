@@ -18,15 +18,15 @@ public sealed class PendingStateStore
         string Nonce,
         string RedirectUri,
         DateTimeOffset Expiry,
-        // non-null only for Quick Connect path
-        string? QuickConnectCode = null);
+        // true: after the login the person types the Quick Connect code of their device
+        bool QuickConnect = false);
 
     private readonly ConcurrentDictionary<string, PendingState> _store = new();
 
     public (string State, PendingState Pending) Issue(
         string providerId,
         string redirectUri,
-        string? quickConnectCode = null)
+        bool quickConnect = false)
     {
         Purge();
 
@@ -40,15 +40,15 @@ public sealed class PendingStateStore
             nonce,
             redirectUri,
             DateTimeOffset.UtcNow.Add(Ttl),
-            quickConnectCode);
+            quickConnect);
 
         _store[state] = pending;
         return (state, pending);
     }
 
-    public PendingState? Consume(string state)
+    public PendingState? Consume(string? state)
     {
-        if (!_store.TryRemove(state, out var pending))
+        if (string.IsNullOrEmpty(state) || !_store.TryRemove(state, out var pending))
             return null;
         return pending.Expiry > DateTimeOffset.UtcNow ? pending : null;
     }

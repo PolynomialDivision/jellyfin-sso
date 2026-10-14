@@ -4,8 +4,26 @@ namespace Jellyfin.Plugin.Sso.Configuration;
 
 public class PluginConfiguration : BasePluginConfiguration
 {
+    /// <summary>
+    /// The public base URL of Jellyfin (e.g. https://media.example.org). The OIDC callback
+    /// URL is built from it, never from request headers (Host / X-Forwarded-* are client
+    /// controlled). Required: without it the login refuses to start.
+    /// </summary>
+    public string PublicUrl { get; set; } = string.Empty;
+
+    /// <summary>Text of the login button; empty: "Login with SSO (provider name)".</summary>
+    public string LoginButtonText { get; set; } = string.Empty;
+
+    /// <summary>
+    /// When true (default), an IdP login whose groups match no mapping is refused before a
+    /// Jellyfin user is created or changed.
+    /// </summary>
+    public bool RequireGroupMapping { get; set; } = true;
+
     public List<ProviderConfig> Providers { get; set; } = [];
     public List<GroupMappingConfig> GroupMappings { get; set; } = [];
+
+    // State written by the plugin itself (never part of the managed file).
     public List<LinkConfig> Links { get; set; } = [];
     public List<string> SeenGroups { get; set; } = [];
 }
@@ -53,13 +71,10 @@ public class GroupMappingConfig
     /// </summary>
     public List<string> LibraryIds { get; set; } = [];
 
-    public bool IsAdministrator { get; set; }
+    /// <summary>Access to every library, including ones added later (no IDs needed).</summary>
+    public bool AllLibraries { get; set; }
 
-    // Phase 2 fields (commented out, same bundle shape so no schema migration needed later):
-    // public bool EnableLiveTvAccess { get; set; }
-    // public bool EnableLiveTvManagement { get; set; }
-    // public bool EnableContentDownloading { get; set; }
-    // public int? MaxParentalRating { get; set; }
+    public bool IsAdministrator { get; set; }
 }
 
 /// <summary>

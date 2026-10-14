@@ -1,3 +1,5 @@
+using System.Net;
+using Jellyfin.Plugin.Sso.Configuration;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Model.Branding;
 using Microsoft.Extensions.Logging;
@@ -12,18 +14,20 @@ namespace Jellyfin.Plugin.Sso.Web;
 public sealed class LoginBranding
 {
     private readonly IServerConfigurationManager _configManager;
+    private readonly EffectiveConfig _settings;
     private readonly ILogger<LoginBranding> _logger;
 
-    public LoginBranding(IServerConfigurationManager configManager, ILogger<LoginBranding> logger)
+    public LoginBranding(IServerConfigurationManager configManager, EffectiveConfig settings, ILogger<LoginBranding> logger)
     {
         _configManager = configManager;
+        _settings = settings;
         _logger = logger;
     }
 
     public void Apply()
     {
-        var config = Plugin.Instance?.Configuration;
-        var provider = config?.Providers.FirstOrDefault(p => p.Enabled);
+        var settings = _settings.Get();
+        var provider = settings.Providers.FirstOrDefault(p => p.Enabled);
 
         var branding = (_configManager.GetConfiguration("branding") as BrandingOptions)
             ?? new BrandingOptions();
@@ -31,7 +35,7 @@ public sealed class LoginBranding
         if (provider is null)
         {
             // No enabled provider — remove the button if it was previously set by us.
-            if (branding.LoginDisclaimer?.Contains("/sso/oidc/start/") == true)
+            if (branding.LoginDisclaimer?.Contains("/sso/oidc/start") == true)
             {
                 branding.LoginDisclaimer = string.Empty;
                 _configManager.SaveConfiguration("branding", branding);
@@ -39,12 +43,7 @@ public sealed class LoginBranding
             return;
         }
 
-        // Inject a link styled with Jellyfin's own button classes.
-        // Using the native Jellyfin web button CSS to blend in.
-        var link = $"<a class=\"raised emby-button block\" " +
-                   $"href=\"/sso/oidc/start/{provider.Id}\" " +
-                   $"style=\"display:block;text-align:center;margin-top:.5em\">" +
-                   $"Login with SSO ({provider.Name})</a>";
+        var link = Button(provider, settings.LoginButtonText);
 
         if (string.Equals(branding.LoginDisclaimer, link, StringComparison.Ordinal))
             return; // no change needed
@@ -52,5 +51,15 @@ public sealed class LoginBranding
         branding.LoginDisclaimer = link;
         _configManager.SaveConfiguration("branding", branding);
         _logger.LogInformation("SSO: login button set in Jellyfin branding for provider {Name}.", provider.Name);
+    }
+
+    /// <summary>A link styled with Jellyfin's own button classes; every value HTML-encoded.</summary>
+    internal static string Button(ProviderConfig provider, string? text)
+    {
+        var label = string.IsNullOrWhiteSpace(text) ? $"Login with SSO ({provider.Name})" : text;
+        return "<a class=\"raised emby-button block\" "
+            + $"href=\"/sso/oidc/start/{WebUtility.HtmlEncode(Uri.EscapeDataString(provider.Id))}\" "
+            + "style=\"display:block;text-align:center;margin-top:.5em\">"
+            + WebUtility.HtmlEncode(label) + "</a>";
     }
 }
