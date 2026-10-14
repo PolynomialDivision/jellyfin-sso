@@ -101,6 +101,8 @@ def main():
     branding = json.loads(http("GET", JF + "/Branding/Configuration")[2])
     check("login button points at the provider", 'href="/sso/oidc/start/authentik"' in branding.get("LoginDisclaimer", ""),
           branding)
+    css = http("GET", JF + "/Branding/Css")[2]
+    check("login style is served once", css.count("/* jellyfin-sso:start") == 1 and "#loginPage" in css, css[:200])
     status, _, _ = http("POST", JF + "/sso/admin/config", {"Providers": []}, headers=admin)
     check("dashboard cannot change managed settings", status == 409, status)
     status, _, _ = http("GET", JF + "/sso/admin/config")

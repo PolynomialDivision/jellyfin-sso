@@ -27,5 +27,6 @@
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
     <EmbeddedResource Include="Configuration\configPage.js" />
+    <EmbeddedResource Include="Web\login.css" />
   </ItemGroup>
 </Project>

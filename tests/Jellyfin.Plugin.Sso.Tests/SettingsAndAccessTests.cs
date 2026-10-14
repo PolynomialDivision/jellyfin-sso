@@ -138,6 +138,23 @@ public class UrlAndPageTests
     }
 
     [Fact]
+    public void LoginStyleReplacesOnlyItsOwnBlock()
+    {
+        const string Block = "/* jellyfin-sso:start x */\na{}\n/* jellyfin-sso:end */";
+        const string Mine = "body { color: red; }";
+        Assert.Equal(Block, LoginBranding.MergeCss(null, Block));
+        var both = LoginBranding.MergeCss(Mine, Block);
+        Assert.Equal(Mine + "\n" + Block, both);
+        // Applied again: the same, not a second block.
+        Assert.Equal(both, LoginBranding.MergeCss(both, Block));
+        // A new version replaces the old block; the admin's CSS stays.
+        Assert.Equal(Mine + "\n" + Block.Replace("a{}", "b{}", StringComparison.Ordinal),
+            LoginBranding.MergeCss(both, Block.Replace("a{}", "b{}", StringComparison.Ordinal)));
+        // Removed when SSO is off.
+        Assert.Equal(Mine, LoginBranding.MergeCss(both, null));
+    }
+
+    [Fact]
     public void LoginButtonIsEncoded()
     {
         var html = LoginBranding.Button(new ProviderConfig { Id = "authentik", Name = "x" }, "<script>\"");

@@ -1,0 +1,16 @@
+/* jellyfin-sso:start (set by the SSO plugin; edits between the markers are replaced) */
+#loginPage > div { display: flex; flex-direction: column; }
+#loginPage > div > .manualLoginForm, #loginPage > div > .readOnlyContent { width: 100%; box-sizing: border-box; }
+#loginPage .readOnlyContent { order: -1; display: flex; flex-direction: column; }
+#loginPage .loginDisclaimerContainer { order: -1; width: 100%; }
+#loginPage .loginDisclaimer, #loginPage .loginDisclaimer p { width: 100%; margin: 0; }
+#loginPage .loginDisclaimer a[href^="/sso/oidc/start"] {
+  display: block; box-sizing: border-box; width: 100%; margin: 0 0 1em; padding: 1em;
+  font-size: 1.25em; font-weight: 600; text-align: center; text-decoration: none;
+  color: #fff; background: #00a4dc; border-radius: .3em;
+}
+#loginPage .loginDisclaimer a[href^="/sso/oidc/start"]:hover { background: #0cb0e8; }
+#loginPage .btnForgotPassword { display: none; }
+#loginPage .manualLoginForm { opacity: .8; margin-top: 1em; }
+#loginPage .manualLoginForm .sectionTitle { font-size: 1.1em; }
+/* jellyfin-sso:end */
