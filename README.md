@@ -1,6 +1,9 @@
 # Jellyfin SSO Authentication Plugin
 
-> **House fork** (branch `house`): security fixes and managed settings, see [HOUSE.md](HOUSE.md).
+> **House fork** (branch `house`): security fixes, managed settings (`SSO_MANAGED_CONFIG`) and
+> enforcement from a directory feed (managed `Enforcement` section: disables and logs out
+> people no longer entitled, admin flag from the feed, break-glass account, unmanaged accounts,
+> API keys, network settings), see [HOUSE.md](HOUSE.md).
 
 OIDC/OAuth2 single sign-on for Jellyfin with **group-based library access**, built for
 **Authentik** and **Authelia**. Replaces the deprecated [9p4/jellyfin-plugin-sso](https://github.com/9p4/jellyfin-plugin-sso).
@@ -213,8 +216,8 @@ Quick Connect enabled server-side). A code in the link is refused (house fork, s
   for CSRF.
 - Ephemeral secrets are random, single-use, short-TTL, in-memory only.
 - Identity is matched by `(provider, sub)`, never by username.
-- Revocation latency: group changes take effect on the user's **next login** (no active
-  re-sync in this version).
+- Revocation latency: group changes take effect on the user's **next login**. In the house
+  fork, the managed `Enforcement` section revokes actively from a directory feed (HOUSE.md).
 
 ---
 

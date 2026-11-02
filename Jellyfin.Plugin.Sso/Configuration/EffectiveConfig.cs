@@ -3,14 +3,20 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Sso.Configuration;
 
-/// <summary>The settings a login uses: public URL, providers and group mappings.</summary>
+/// <summary>
+/// The settings a login uses: public URL, providers and group mappings; from a managed file
+/// also what is enforced (null: nothing). LoadFailed: the managed file could not be read, so
+/// everything is off.
+/// </summary>
 public sealed record SsoSettings(
     string PublicUrl,
     string LoginButtonText,
     bool RequireGroupMapping,
     IReadOnlyList<ProviderConfig> Providers,
     IReadOnlyList<GroupMappingConfig> GroupMappings,
-    bool Managed);
+    bool Managed,
+    EnforcementSettings? Enforcement = null,
+    bool LoadFailed = false);
 
 /// <summary>
 /// Where the settings come from. With the environment variable SSO_MANAGED_CONFIG set to a
@@ -18,7 +24,8 @@ public sealed record SsoSettings(
 /// providers and group mappings come only from that file and the dashboard cannot change
 /// them. Without it, they come from the plugin configuration (dashboard). Links and seen
 /// groups always stay in the plugin configuration: they are state, not settings.
-/// A managed file that cannot be read fails closed: no provider, so no SSO login.
+/// A managed file that cannot be read fails closed: no provider, so no SSO login, and no
+/// enforcement round (its optional "Enforcement" section: EnforcementSettings).
 /// </summary>
 public sealed class EffectiveConfig
 {
@@ -78,7 +85,7 @@ public sealed class EffectiveConfig
             {
                 _logger.LogError(ex, "SSO: cannot read the managed settings {Path}; SSO login is off.", _path);
                 _managed = null;
-                return new SsoSettings(string.Empty, string.Empty, true, [], [], Managed: true);
+                return new SsoSettings(string.Empty, string.Empty, true, [], [], Managed: true, LoadFailed: true);
             }
         }
     }
@@ -97,8 +104,9 @@ public sealed class EffectiveConfig
             if (string.IsNullOrWhiteSpace(p.Authority) || string.IsNullOrWhiteSpace(p.ClientId))
                 throw new InvalidDataException($"provider {p.Id} needs Authority and ClientId");
         }
+        var enforcement = file.Enforcement is null ? null : EnforcementSettings.From(file.Enforcement);
         return new SsoSettings(file.PublicUrl.TrimEnd('/'), file.LoginButtonText ?? string.Empty,
-            file.RequireGroupMapping ?? true, file.Providers, file.GroupMappings, Managed: true);
+            file.RequireGroupMapping ?? true, file.Providers, file.GroupMappings, Managed: true, enforcement);
     }
 
     private sealed class ManagedFile
@@ -108,5 +116,6 @@ public sealed class EffectiveConfig
         public bool? RequireGroupMapping { get; set; }
         public List<ProviderConfig> Providers { get; set; } = [];
         public List<GroupMappingConfig> GroupMappings { get; set; } = [];
+        public EnforcementFile? Enforcement { get; set; }
     }
 }

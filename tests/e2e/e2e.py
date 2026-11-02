@@ -5,11 +5,19 @@ Plays the browser with plain HTTP (redirects followed by hand) and checks the lo
 and the refusals: web login, single-use secret, Quick Connect by typed code only, no access
 without a mapped group, no takeover of a local account, a disabled user stays disabled,
 forged forwarding headers do not change the callback, the login button, the managed file.
+Then the enforcement (managed "Enforcement" section, rounds every 3 s): the directory feed
+disables, enables and (de)promotes linked users, a stale feed changes nothing, a disable by
+hand stays, unmanaged accounts and stray API keys go, the break-glass account follows the
+managed file, the network settings are set with one restart.
 """
 
+import datetime
 import json
+import os
 import re
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -203,8 +211,189 @@ def main():
                            headers={"Authorization": CLIENT})
     check("the device gets a token for alice", status == 200 and json.loads(body)["User"]["Name"] == "alice", body[:200])
 
+    # A new password login replaces the token of the same user and device (Jellyfin), so the
+    # admin token from the start was logged out by "local admin still logs in" above.
+    status, _, body = authenticate(*ADMIN)
+    enforcement(token_header(json.loads(body)["AccessToken"]) if status == 200 else {})
+
     print("%d failure(s)" % len(failures))
     return 1 if failures else 0
+
+
+# --- enforcement --------------------------------------------------------------------------
+
+MANAGED = os.environ.get("E2E_MANAGED", "")
+FEED = os.environ.get("E2E_FEED", "")
+CONTAINER = os.environ.get("E2E_CONTAINER", "jellyfin-sso-e2e")
+ROUND = 3  # IntervalSeconds in run.sh
+
+
+def write_atomic(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def write_feed(allowed, admins, age=0):
+    generated = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=age)
+    write_atomic(FEED, json.dumps({"version": 1, "generated_at": generated.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                                   "allowed": allowed, "admins": admins}))
+
+
+def set_break_glass(enabled):
+    with open(MANAGED) as f:
+        cfg = json.load(f)
+    cfg["Enforcement"]["BreakGlass"]["Enabled"] = enabled
+    write_atomic(MANAGED, json.dumps(cfg, indent=2))
+
+
+def wait_for(predicate, timeout=8 * ROUND):
+    """True as soon as predicate() is; False after the timeout."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(0.5)
+    return predicate()
+
+
+def me(token):
+    status, _, body = http("GET", JF + "/Users/Me", headers=token_header(token))
+    return status, (json.loads(body) if status == 200 else {})
+
+
+def web_login(sub, username, groups):
+    """SSO web login through the mock IdP: (status of the token request, access token)."""
+    set_user(sub, username, groups)
+    _, body, _ = sso_login()
+    user, secret = credentials_from_page(body)
+    status, _, auth_body = authenticate(user or username, secret or "x")
+    return status, (json.loads(auth_body)["AccessToken"] if status == 200 else None)
+
+
+def startups():
+    out = subprocess.run(["docker", "logs", CONTAINER], capture_output=True, text=True, check=False)
+    return (out.stdout + out.stderr).count("Startup complete")
+
+
+def enforcement(admin):
+    def users(hdr=None):
+        return {u["Name"]: u for u in json.loads(http("GET", JF + "/Users", headers=hdr or admin)[2])}
+
+    def policy(name, hdr=None):
+        return users(hdr).get(name, {}).get("Policy", {})
+
+    resident = ["residents"]
+
+    # --- no feed yet: the local rules only
+    status, _, body = http("POST", JF + "/Users/New", {"Name": "local-extra", "Password": "pw"}, headers=admin)
+    check("admin can create a local account", status == 200, (status, body[:200]))
+    check("an unmanaged local account is disabled",
+          wait_for(lambda: policy("local-extra").get("IsDisabled") is True), policy("local-extra"))
+    check("without a feed a linked user is left alone", policy("alice").get("IsDisabled") is False, policy("alice"))
+    check("break-glass account may log in only from the local networks",
+          policy(ADMIN[0]).get("EnableRemoteAccess") is False and policy(ADMIN[0]).get("IsAdministrator") is True,
+          policy(ADMIN[0]))
+
+    # --- network settings: as configured, after exactly one restart
+    status, _, body = http("GET", JF + "/System/Configuration/network", headers=admin)
+    net = json.loads(body) if status == 200 else {}
+    check("network settings are the configured ones",
+          net.get("KnownProxies") == ["10.251.8.2"]
+          and sorted(net.get("LocalNetworkSubnets", [])) == ["10.0.0.0/24", "10.0.10.0/24"]
+          and net.get("EnableRemoteAccess") is True, net)
+    check("Jellyfin restarted once for the KnownProxies", startups() == 2, startups())
+
+    # --- carol (admin by group) and alice log in; then a feed with both
+    status, carol = web_login("sub-carol", "carol", ["residents", "it-admins"])
+    check("carol logs in via SSO as administrator", status == 200 and me(carol)[1].get("Policy", {}).get("IsAdministrator"),
+          status)
+    carol_hdr = token_header(carol or "")
+    status, alice = web_login("sub-alice", "alice", resident)
+    check("alice logs in via SSO", status == 200, status)
+    time.sleep(1.1)  # the feed must be newer than these logins
+    write_feed(["sub-alice", "sub-carol"], ["sub-carol"])
+    time.sleep(2 * ROUND)
+    check("a feed with everyone changes nobody",
+          me(alice)[0] == 200 and policy("alice").get("IsDisabled") is False and policy("carol").get("IsAdministrator"),
+          (me(alice)[0], policy("alice"), policy("carol")))
+
+    # --- (a) alice removed from the feed: her token stops working, she is disabled
+    write_feed(["sub-carol"], ["sub-carol"])
+    check("removed from the feed: the existing token gets 401", wait_for(lambda: me(alice)[0] == 401), me(alice)[0])
+    check("removed from the feed: the user is disabled", policy("alice").get("IsDisabled") is True, policy("alice"))
+
+    # --- (c) a stale or future feed that lists alice again changes nothing
+    write_feed(["sub-alice", "sub-carol"], ["sub-carol"], age=3600)
+    time.sleep(3 * ROUND)
+    check("a stale feed changes nothing", policy("alice").get("IsDisabled") is True, policy("alice"))
+    write_feed(["sub-alice", "sub-carol"], ["sub-carol"], age=-3600)
+    time.sleep(3 * ROUND)
+    check("a feed from the future changes nothing", policy("alice").get("IsDisabled") is True, policy("alice"))
+
+    # --- (b) back in the feed: enabled again, a new SSO login works
+    write_feed(["sub-alice", "sub-carol"], ["sub-carol"])
+    check("back in the feed: the user is enabled", wait_for(lambda: policy("alice").get("IsDisabled") is False),
+          policy("alice"))
+    status, alice = web_login("sub-alice", "alice", resident)
+    check("back in the feed: a new SSO login works", status == 200 and me(alice)[0] == 200, status)
+
+    # --- a fresh SSO login enables a user the enforcement disabled, and outweighs the older feed
+    time.sleep(1.1)
+    write_feed(["sub-carol"], ["sub-carol"])
+    check("removed again: disabled", wait_for(lambda: policy("alice").get("IsDisabled") is True), policy("alice"))
+    status, alice = web_login("sub-alice", "alice", resident)
+    check("a fresh SSO login enables a user the enforcement disabled", status == 200, status)
+    time.sleep(3 * ROUND)
+    check("a login newer than the feed outweighs it", me(alice)[0] == 200 and policy("alice").get("IsDisabled") is False,
+          (me(alice)[0], policy("alice")))
+    time.sleep(1.1)
+    write_feed(["sub-alice", "sub-carol"], ["sub-carol"])
+
+    # --- (i) a user disabled by hand stays disabled although the feed lists it
+    pol = policy("alice")
+    pol["IsDisabled"] = True
+    status, _, _ = http("POST", JF + "/Users/%s/Policy" % users()["alice"]["Id"], pol, headers=admin)
+    check("admin can disable alice by hand", status in (200, 204), status)
+    time.sleep(3 * ROUND)
+    check("a user disabled by hand stays disabled while in the feed", policy("alice").get("IsDisabled") is True,
+          policy("alice"))
+    status, _ = web_login("sub-alice", "alice", resident)
+    time.sleep(2 * ROUND)
+    check("an SSO login does not enable a user disabled by hand",
+          status != 200 and policy("alice").get("IsDisabled") is True, (status, policy("alice")))
+    pol = policy("alice")
+    pol["IsDisabled"] = False
+    http("POST", JF + "/Users/%s/Policy" % users()["alice"]["Id"], pol, headers=admin)
+
+    # --- (e) API keys: only allowed names survive
+    for app in ("rogue-key", "house-monitoring"):
+        status, _, _ = http("POST", JF + "/Auth/Keys?app=" + app, headers=admin)
+        check("admin can create API key " + app, status in (200, 204), status)
+
+    def key_names():
+        return sorted(k["AppName"] for k in json.loads(http("GET", JF + "/Auth/Keys", headers=admin)[2])["Items"])
+    check("an API key with a name not allowed is deleted", wait_for(lambda: key_names() == ["house-monitoring"]),
+          key_names())
+
+    # --- (f) break-glass off: no password login, its token is gone; on again: it works locally
+    set_break_glass(False)
+    check("break-glass off: its token gets 401", wait_for(lambda: http("GET", JF + "/Users/Me", headers=admin)[0] == 401))
+    status, _, _ = authenticate(*ADMIN)
+    bg = policy(ADMIN[0], carol_hdr)
+    check("break-glass off: password login fails, the account stays administrator",
+          status != 200 and bg.get("IsDisabled") is True and bg.get("IsAdministrator") is True, (status, bg))
+    set_break_glass(True)
+    check("break-glass on: password login from loopback works", wait_for(lambda: authenticate(*ADMIN)[0] == 200))
+
+    # --- (d) admin flag removed via the feed: the token stays valid, the flag goes
+    time.sleep(1.1)
+    write_feed(["sub-alice", "sub-carol"], [])
+    check("admin removed in the feed: token valid, no administrator",
+          wait_for(lambda: me(carol or "")[0] == 200 and me(carol or "")[1].get("Policy", {}).get("IsAdministrator") is False),
+          me(carol or ""))
+    check("no further restart", startups() == 2, startups())
 
 
 if __name__ == "__main__":

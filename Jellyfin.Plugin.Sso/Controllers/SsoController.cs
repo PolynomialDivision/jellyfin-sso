@@ -2,6 +2,7 @@ using System.Net;
 using IdentityModel.Client;
 using Jellyfin.Plugin.Sso.Auth;
 using Jellyfin.Plugin.Sso.Configuration;
+using Jellyfin.Plugin.Sso.Enforcement;
 using Jellyfin.Plugin.Sso.Oidc;
 using Jellyfin.Plugin.Sso.Provisioning;
 using MediaBrowser.Common.Extensions;
@@ -27,6 +28,8 @@ public sealed class SsoController : ControllerBase
     private readonly QuickConnectApprovalStore _approvals;
     private readonly EffectiveConfig _settings;
     private readonly IQuickConnect _quickConnect;
+    private readonly PolicyState _policy;
+    private readonly EnforcementExecutor _enforcement;
     private readonly ILogger<SsoController> _logger;
 
     public SsoController(
@@ -39,6 +42,8 @@ public sealed class SsoController : ControllerBase
         QuickConnectApprovalStore approvals,
         EffectiveConfig settings,
         IQuickConnect quickConnect,
+        PolicyState policy,
+        EnforcementExecutor enforcement,
         ILogger<SsoController> logger)
     {
         _states = states;
@@ -50,6 +55,8 @@ public sealed class SsoController : ControllerBase
         _approvals = approvals;
         _settings = settings;
         _quickConnect = quickConnect;
+        _policy = policy;
+        _enforcement = enforcement;
         _logger = logger;
     }
 
@@ -191,6 +198,16 @@ public sealed class SsoController : ControllerBase
 
             await _permissions.SyncAsync(userId, identity, access, ct).ConfigureAwait(false);
 
+            // Under the enforcement's lock, so a running round sees this login. The login time
+            // is recorded first: a login newer than the directory feed outweighs the feed. A
+            // user the enforcement disabled is enabled again (the IdP just let the person in);
+            // one an admin disabled by hand stays disabled and Jellyfin refuses the login.
+            using (await _policy.LockAsync(ct).ConfigureAwait(false))
+            {
+                PolicyState.RecordLogin(provider.Id, identity.Sub, DateTimeOffset.UtcNow);
+                await _enforcement.EnableAfterLoginAsync(userId).ConfigureAwait(false);
+            }
+
             if (pending.QuickConnect)
                 return QuickConnectForm(_approvals.Issue(userId), username);
 
@@ -213,36 +230,35 @@ public sealed class SsoController : ControllerBase
     public IActionResult LinkAccount(
         [FromBody] LinkRequest req)
     {
-        var config = Plugin.Instance!.Configuration;
-
-        if (config.Links.Any(l =>
-                l.ProviderId == req.ProviderId &&
-                string.Equals(l.Sub, req.Sub, StringComparison.Ordinal)))
+        var added = PluginStateStore.Shared.Update(config =>
         {
-            return Conflict("A link for this provider+sub already exists.");
-        }
+            if (config.Links.Any(l =>
+                    l.ProviderId == req.ProviderId &&
+                    string.Equals(l.Sub, req.Sub, StringComparison.Ordinal)))
+                return (false, false);
 
-        config.Links.Add(new LinkConfig
-        {
-            ProviderId = req.ProviderId,
-            Sub = req.Sub,
-            JellyfinUserId = req.JellyfinUserId,
+            config.Links.Add(new LinkConfig
+            {
+                ProviderId = req.ProviderId,
+                Sub = req.Sub,
+                JellyfinUserId = req.JellyfinUserId,
+            });
+            return (true, true);
         });
-        Plugin.Instance.SaveConfiguration();
 
-        return Ok();
+        return added ? Ok() : Conflict("A link for this provider+sub already exists.");
     }
 
     [HttpDelete("admin/link/{jellyfinUserId}")]
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult UnlinkAccount(Guid jellyfinUserId)
     {
-        var config = Plugin.Instance!.Configuration;
-        var removed = config.Links.RemoveAll(l => l.JellyfinUserId == jellyfinUserId);
-        if (removed == 0)
-            return NotFound("No link found for this user.");
-        Plugin.Instance.SaveConfiguration();
-        return Ok();
+        var removed = PluginStateStore.Shared.Update(config =>
+        {
+            var n = config.Links.RemoveAll(l => l.JellyfinUserId == jellyfinUserId);
+            return (n, n > 0);
+        });
+        return removed == 0 ? NotFound("No link found for this user.") : Ok();
     }
 
     // ──────────────────────────────────────────────────────────────────────────

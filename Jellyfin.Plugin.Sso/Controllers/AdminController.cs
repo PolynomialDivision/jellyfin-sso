@@ -1,4 +1,5 @@
 using Jellyfin.Plugin.Sso.Configuration;
+using Jellyfin.Plugin.Sso.Enforcement;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -31,8 +32,8 @@ public sealed class AdminController : ControllerBase
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult GetConfig()
     {
-        var c = Plugin.Instance!.Configuration;
         var s = _settings.Get();
+        var (links, seenGroups) = PluginStateStore.Shared.Read(c => (c.Links.Select(PolicyState.Copy).ToList(), c.SeenGroups.ToList()));
         return Ok(new
         {
             s.PublicUrl,
@@ -40,8 +41,8 @@ public sealed class AdminController : ControllerBase
             s.RequireGroupMapping,
             s.Providers,
             s.GroupMappings,
-            c.Links,
-            c.SeenGroups,
+            Links = links,
+            SeenGroups = seenGroups,
             s.Managed,
         });
     }
@@ -53,12 +54,16 @@ public sealed class AdminController : ControllerBase
         if (_settings.IsManaged)
             return Conflict("The SSO settings are managed by a file (" + EffectiveConfig.EnvironmentVariable
                 + "); only account links can be changed here.");
-        // Links and seen groups are the plugin's own state: never replaced by a page save
-        // (a page opened earlier would drop the links made since).
-        var current = Plugin.Instance!.Configuration;
-        config.Links = current.Links;
-        config.SeenGroups = current.SeenGroups;
-        Plugin.Instance.UpdateConfiguration(config);
+        // Links, seen groups and the enforcement's list are the plugin's own state: never
+        // replaced by a page save (a page opened earlier would drop the links made since).
+        PluginStateStore.Shared.Update(current =>
+        {
+            config.Links = current.Links;
+            config.SeenGroups = current.SeenGroups;
+            config.DisabledByPolicy = current.DisabledByPolicy;
+            Plugin.Instance!.UpdateConfiguration(config); // saves itself
+            return false;
+        });
         return Ok();
     }
 
@@ -78,8 +83,7 @@ public sealed class AdminController : ControllerBase
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult GetUsers()
     {
-        var linkedIds = Plugin.Instance!.Configuration.Links
-            .Select(l => l.JellyfinUserId).ToHashSet();
+        var linkedIds = PluginStateStore.Shared.Read(c => c.Links.Select(l => l.JellyfinUserId).ToHashSet());
         return Ok(_userManager.GetUsers()
             .OrderBy(u => u.Username, StringComparer.OrdinalIgnoreCase)
             .Select(u => new { Id = u.Id, Name = u.Username, Linked = linkedIds.Contains(u.Id) })
@@ -91,7 +95,7 @@ public sealed class AdminController : ControllerBase
     [HttpGet("seen-groups")]
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult GetSeenGroups()
-        => Ok(Plugin.Instance!.Configuration.SeenGroups.OrderBy(g => g));
+        => Ok(PluginStateStore.Shared.Read(c => c.SeenGroups.OrderBy(g => g).ToList()));
 
     // ─── Links ───────────────────────────────────────────────────────────────
 
@@ -99,8 +103,8 @@ public sealed class AdminController : ControllerBase
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult GetLinks()
     {
-        var config = Plugin.Instance!.Configuration;
-        return Ok(config.Links.Select(l => new
+        var links = PluginStateStore.Shared.Read(c => c.Links.Select(PolicyState.Copy).ToList());
+        return Ok(links.Select(l => new
         {
             l.ProviderId,
             l.Sub,
@@ -113,25 +117,29 @@ public sealed class AdminController : ControllerBase
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult CreateLink([FromBody] LinkConfig link)
     {
-        var config = Plugin.Instance!.Configuration;
-        if (config.Links.Any(l =>
-                l.ProviderId == link.ProviderId &&
-                string.Equals(l.Sub, link.Sub, StringComparison.Ordinal)))
-            return Conflict("Link already exists.");
-        config.Links.Add(link);
-        Plugin.Instance.SaveConfiguration();
-        return Ok();
+        // Only a real login sets the login time (a future one would shield the user from the
+        // directory feed).
+        link.LastLoginUtc = null;
+        var added = PluginStateStore.Shared.Update(c =>
+        {
+            if (c.Links.Any(l => l.ProviderId == link.ProviderId && string.Equals(l.Sub, link.Sub, StringComparison.Ordinal)))
+                return (false, false);
+            c.Links.Add(link);
+            return (true, true);
+        });
+        return added ? Ok() : Conflict("Link already exists.");
     }
 
     [HttpDelete("links/{jellyfinUserId:guid}")]
     [Authorize(Policy = "RequiresElevation")]
     public IActionResult DeleteLink(Guid jellyfinUserId)
     {
-        var config = Plugin.Instance!.Configuration;
-        var removed = config.Links.RemoveAll(l => l.JellyfinUserId == jellyfinUserId);
-        if (removed == 0) return NotFound();
-        Plugin.Instance.SaveConfiguration();
-        return Ok();
+        var removed = PluginStateStore.Shared.Update(c =>
+        {
+            var n = c.Links.RemoveAll(l => l.JellyfinUserId == jellyfinUserId);
+            return (n, n > 0);
+        });
+        return removed == 0 ? NotFound() : Ok();
     }
 
 }

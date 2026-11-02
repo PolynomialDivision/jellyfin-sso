@@ -43,23 +43,21 @@ public sealed class UserProvisioner
 
     private async Task<(Guid UserId, string Username)> ResolveLockedAsync(ProviderConfig provider, OidcIdentity identity)
     {
-        var config = Plugin.Instance!.Configuration;
+        var store = PluginStateStore.Shared;
 
         // 1. Check for an existing link — the only way to match, never by username.
-        var existing = config.Links.FirstOrDefault(l =>
-            l.ProviderId == provider.Id &&
-            string.Equals(l.Sub, identity.Sub, StringComparison.Ordinal));
+        bool IsThisIdentity(LinkConfig l) => l.ProviderId == provider.Id && string.Equals(l.Sub, identity.Sub, StringComparison.Ordinal);
+        var existing = store.Read(c => c.Links.FirstOrDefault(IsThisIdentity) is { } l ? (Guid?)l.JellyfinUserId : null);
 
-        if (existing != null)
+        if (existing is { } linkedId)
         {
-            var user = _userManager.GetUserById(existing.JellyfinUserId);
+            var user = _userManager.GetUserById(linkedId);
             if (user is null)
             {
                 _logger.LogWarning(
                     "Link exists for sub={Sub} but Jellyfin user {Id} not found — removing stale link.",
-                    identity.Sub, existing.JellyfinUserId);
-                config.Links.Remove(existing);
-                Plugin.Instance.SaveConfiguration();
+                    identity.Sub, linkedId);
+                store.Update(c => c.Links.RemoveAll(l => IsThisIdentity(l) && l.JellyfinUserId == linkedId) > 0);
             }
             else
             {
@@ -96,13 +94,16 @@ public sealed class UserProvisioner
         await _userManager.UpdatePolicyAsync(newUser.Id, policy).ConfigureAwait(false);
 
         // Store the link.
-        config.Links.Add(new LinkConfig
+        store.Update(c =>
         {
-            ProviderId = provider.Id,
-            Sub = identity.Sub,
-            JellyfinUserId = newUser.Id,
+            c.Links.Add(new LinkConfig
+            {
+                ProviderId = provider.Id,
+                Sub = identity.Sub,
+                JellyfinUserId = newUser.Id,
+            });
+            return true;
         });
-        Plugin.Instance.SaveConfiguration();
 
         return (newUser.Id, newUser.Username);
     }

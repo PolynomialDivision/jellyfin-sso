@@ -1,5 +1,6 @@
 using Jellyfin.Plugin.Sso.Auth;
 using Jellyfin.Plugin.Sso.Configuration;
+using Jellyfin.Plugin.Sso.Enforcement;
 using Jellyfin.Plugin.Sso.Oidc;
 using Jellyfin.Plugin.Sso.Provisioning;
 using Jellyfin.Plugin.Sso.Web;
@@ -24,6 +25,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<PermissionSync>();
         serviceCollection.AddSingleton<LoginBranding>();
         serviceCollection.AddHostedService<BrandingStartup>();
+        serviceCollection.AddSingleton<PolicyState>();
+        serviceCollection.AddSingleton<EnforcementExecutor>();
+        serviceCollection.AddHostedService<EnforcementService>();
         serviceCollection.AddScoped<IAuthenticationProvider, SsoAuthenticationProvider>();
     }
 }

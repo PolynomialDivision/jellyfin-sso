@@ -11,18 +11,22 @@ secret=e2e-client-secret
 
 # shellcheck disable=SC2329  # called by the trap below
 cleanup() {
+  docker logs jellyfin-sso-e2e >"$run/jellyfin.log" 2>&1 || true
   docker rm -f jellyfin-sso-e2e >/dev/null 2>&1 || true
   [ -n "${idp_pid:-}" ] && kill "$idp_pid" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-rm -rf "$run" && mkdir -p "$run/config/plugins/SSO Authentication_0.0.0.0" "$run/cache" "$run/publish"
+rm -rf "$run" && mkdir -p "$run/config/plugins/SSO Authentication_0.0.0.0" "$run/cache" "$run/publish" \
+  "$run/managed" "$run/directory"
 "$root/scripts/dotnet.sh" publish Jellyfin.Plugin.Sso -c Release -o /src/tests/runs/e2e/publish >/dev/null
 while read -r dll; do
   cp "$run/publish/$dll" "$run/config/plugins/SSO Authentication_0.0.0.0/"
 done < "$root/scripts/plugin-files.txt"
 
-cat > "$run/sso.json" <<'EOF'
+# Directories, not files, are mounted: the test replaces the managed file and the directory
+# feed atomically (rename), as configuration management and the directory writer do.
+cat > "$run/managed/sso.json" <<'EOF'
 {
   "PublicUrl": "http://127.0.0.1:8096",
   "LoginButtonText": "Log in with the house account",
@@ -31,7 +35,15 @@ cat > "$run/sso.json" <<'EOF'
                  "ClientId": "jellyfin", "ClientType": "Confidential",
                  "ConfidentialSecretRef": "env:SSO_CLIENT_SECRET"}],
   "GroupMappings": [{"Group": "residents", "AllLibraries": true},
-                    {"Group": "it-admins", "IsAdministrator": true}]
+                    {"Group": "it-admins", "IsAdministrator": true}],
+  "Enforcement": {
+    "Enabled": true,
+    "IntervalSeconds": 3,
+    "Network": {"KnownProxies": ["10.251.8.2"], "LocalNetworkSubnets": ["10.0.10.0/24", "10.0.0.0/24"]},
+    "BreakGlass": {"Users": ["jellyfin-admin"], "Enabled": true},
+    "AllowedApiKeyNames": ["house-monitoring"],
+    "Directory": {"Path": "/run/house-directory/media.json", "MaxAgeSeconds": 1800}
+  }
 }
 EOF
 
@@ -41,15 +53,27 @@ idp_pid=$!
 
 docker run -d --name jellyfin-sso-e2e --network host -u "$(id -u):$(id -g)" \
   -e SSO_MANAGED_CONFIG=/etc/jellyfin-sso/sso.json -e SSO_CLIENT_SECRET="$secret" \
-  -v "$run/sso.json:/etc/jellyfin-sso/sso.json:ro" -v "$run/config:/config" -v "$run/cache:/cache" \
+  -v "$run/managed:/etc/jellyfin-sso:ro" -v "$run/directory:/run/house-directory:ro" \
+  -v "$run/config:/config" -v "$run/cache:/cache" \
   "$JELLYFIN_IMAGE" >/dev/null
+healthy() {
+  for _ in $(seq 90); do
+    [ "$(curl -s http://127.0.0.1:8096/health || true)" = Healthy ] && return 0
+    sleep 2
+  done
+}
+healthy
+# The enforcement sets KnownProxies at the first start and restarts Jellyfin once for them
+# (Jellyfin reads them only at startup). Wait for the second start; e2e.py checks it was one.
 for _ in $(seq 90); do
-  [ "$(curl -s http://127.0.0.1:8096/health || true)" = Healthy ] && break
+  [ "$(docker logs jellyfin-sso-e2e 2>&1 | grep -c 'Startup complete')" -ge 2 ] && break
   sleep 2
 done
+healthy
 
 status=0
-python3 "$root/tests/e2e/e2e.py" || status=$?
+E2E_MANAGED="$run/managed/sso.json" E2E_FEED="$run/directory/media.json" E2E_CONTAINER=jellyfin-sso-e2e \
+  python3 "$root/tests/e2e/e2e.py" || status=$?
 if [ "$status" -ne 0 ]; then
   echo "--- Jellyfin log (SSO lines)"
   docker logs jellyfin-sso-e2e 2>&1 | grep -iE "sso|Jellyfin.Plugin.Sso|error" | tail -40

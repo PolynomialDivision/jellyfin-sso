@@ -1,3 +1,4 @@
+using Jellyfin.Plugin.Sso.Configuration;
 using Jellyfin.Plugin.Sso.Oidc;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
@@ -40,12 +41,11 @@ public sealed class PermissionSync
 
         await _userManager.UpdatePolicyAsync(userId, policy).ConfigureAwait(false);
 
-        var config = Plugin.Instance!.Configuration;
-        var newGroups = identity.Groups.Except(config.SeenGroups, StringComparer.Ordinal).ToList();
-        if (newGroups.Count > 0)
+        PluginStateStore.Shared.Update(config =>
         {
+            var newGroups = identity.Groups.Except(config.SeenGroups, StringComparer.Ordinal).ToList();
             config.SeenGroups.AddRange(newGroups);
-            Plugin.Instance.SaveConfiguration();
-        }
+            return newGroups.Count > 0;
+        });
     }
 }

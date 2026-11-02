@@ -26,6 +26,13 @@ public class PluginConfiguration : BasePluginConfiguration
     // State written by the plugin itself (never part of the managed file).
     public List<LinkConfig> Links { get; set; } = [];
     public List<string> SeenGroups { get; set; } = [];
+
+    /// <summary>
+    /// Jellyfin users the enforcement disabled (Enforcement/). Only these are enabled again by
+    /// the directory feed or a fresh SSO login; a user an admin disabled by hand is not in
+    /// here and stays disabled.
+    /// </summary>
+    public List<Guid> DisabledByPolicy { get; set; } = [];
 }
 
 public class ProviderConfig
@@ -86,4 +93,11 @@ public class LinkConfig
     public string ProviderId { get; set; } = string.Empty;
     public string Sub { get; set; } = string.Empty;
     public Guid JellyfinUserId { get; set; }
+
+    /// <summary>
+    /// The last successful SSO login (web or Quick Connect). A login newer than the directory
+    /// feed is fresher evidence than the feed: the enforcement leaves the user alone until a
+    /// newer feed arrives.
+    /// </summary>
+    public DateTimeOffset? LastLoginUtc { get; set; }
 }
