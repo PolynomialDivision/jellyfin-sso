@@ -5,7 +5,7 @@
 # The image defaults to the one in JELLYFIN_IMAGE below; pass another to test an update.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-JELLYFIN_IMAGE=${1:-jellyfin/jellyfin:12.2.20261005-225228@sha256:357724bf0ae27a672c7cbaa899db2d9abeb13dbd8657ccce750258a4c059d037}
+JELLYFIN_IMAGE=${1:-jellyfin/jellyfin:12.4.20261026-211555@sha256:fea863d0cd9ec445985d9c75fc6ed64e38a1d2766cf0c250a33d553f4fc1b771}
 run="$root/tests/runs/e2e"
 secret=e2e-client-secret
 

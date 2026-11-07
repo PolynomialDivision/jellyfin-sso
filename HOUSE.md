@@ -44,7 +44,7 @@ Function:
 - A local account an admin links by hand keeps its password login (upstream switched it to
   SSO-only at the next login). With the enforcement on, a linked account is SSO-only (below).
 - JIT creation under a lock (two simultaneous first logins: one user).
-- Built against Jellyfin 12.2.0; Microsoft.IdentityModel 8.23.0.
+- Built against Jellyfin 12.4.0; Microsoft.IdentityModel 8.23.0.
 
 ## Enforcement (managed "Enforcement" section)
 
