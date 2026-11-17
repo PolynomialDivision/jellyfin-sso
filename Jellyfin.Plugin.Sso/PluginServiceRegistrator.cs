@@ -1,5 +1,6 @@
 using Jellyfin.Plugin.Sso.Auth;
 using Jellyfin.Plugin.Sso.Configuration;
+using Jellyfin.Plugin.Sso.Enforcement;
 using Jellyfin.Plugin.Sso.Oidc;
 using Jellyfin.Plugin.Sso.Provisioning;
 using Jellyfin.Plugin.Sso.Web;
@@ -50,6 +51,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // update does not do.
         serviceCollection.AddHostedService<SettingsFileStartup>();
         serviceCollection.AddHostedService<LoginBrandingStartup>();
+
+        // House fork: keeps the settings' "Enforcement" true (Enforcement/).
+        serviceCollection.AddSingleton<PolicyState>();
+        serviceCollection.AddSingleton<EnforcementExecutor>();
+        serviceCollection.AddHostedService<EnforcementService>();
 
         // Optional: puts the login button inside Jellyfin's login form by adding a
         // script tag to index.html as it is served.

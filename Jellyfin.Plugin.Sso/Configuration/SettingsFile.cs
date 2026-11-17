@@ -15,7 +15,11 @@ public sealed class SettingsFile
 {
     public const string EnvironmentVariable = "JELLYFIN_SSO_SETTINGS_FILE";
 
-    private static readonly string[] State = [nameof(PluginConfiguration.Links), nameof(PluginConfiguration.SeenGroups)];
+    private static readonly string[] State =
+    [
+        nameof(PluginConfiguration.Links), nameof(PluginConfiguration.SeenGroups),
+        nameof(PluginConfiguration.DisabledByPolicy),
+    ];
 
     private static readonly JsonSerializerOptions Options = new()
     {

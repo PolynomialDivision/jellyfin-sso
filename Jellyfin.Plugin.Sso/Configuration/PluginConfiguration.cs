@@ -41,6 +41,18 @@ public class PluginConfiguration : BasePluginConfiguration
     public List<string> SeenGroups { get; set; } = [];
 
     /// <summary>
+    /// What the enforcement keeps true in Jellyfin (house fork, Enforcement/); null: nothing.
+    /// </summary>
+    public EnforcementFile? Enforcement { get; set; }
+
+    /// <summary>
+    /// Jellyfin users the enforcement disabled. Only these are enabled again by the directory
+    /// feed or a fresh SSO login; a user an admin disabled by hand is not in here and stays
+    /// disabled. State, like the links.
+    /// </summary>
+    public List<Guid> DisabledByPolicy { get; set; } = [];
+
+    /// <summary>
     /// The address people open Jellyfin at, with its sub-path if it has one. When set, the
     /// redirect URI, the cookies and the links are built from it alone, and a flow opened
     /// at another address is sent here before it starts; when empty, they are built from
@@ -351,4 +363,11 @@ public class LinkConfig
     public string ProviderId { get; set; } = string.Empty;
     public string Sub { get; set; } = string.Empty;
     public Guid JellyfinUserId { get; set; }
+
+    /// <summary>
+    /// The last successful SSO login (web or Quick Connect). A login newer than the directory
+    /// feed is fresher evidence than the feed: the enforcement leaves the user alone until a
+    /// newer feed arrives.
+    /// </summary>
+    public DateTimeOffset? LastLoginUtc { get; set; }
 }

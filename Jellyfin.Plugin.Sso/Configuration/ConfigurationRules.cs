@@ -136,6 +136,18 @@ public static partial class ConfigurationRules
                 + "Jellyfin at, like https://jellyfin.example.com or https://example.com/jellyfin.";
         }
 
+        if (config.Enforcement is { } enforcement)
+        {
+            try
+            {
+                EnforcementSettings.From(enforcement);
+            }
+            catch (InvalidDataException ex)
+            {
+                return ex.Message;
+            }
+        }
+
         return null;
     }
 }
