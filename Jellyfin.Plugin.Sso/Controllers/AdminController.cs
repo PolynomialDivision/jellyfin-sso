@@ -101,6 +101,15 @@ public sealed class AdminController : ControllerBase
         return Ok();
     }
 
+    /// <summary>The settings file and what it decides; an empty object when there is none.</summary>
+    [HttpGet("settings-file")]
+    [Authorize(Policy = "RequiresElevation")]
+    public IActionResult GetSettingsFile()
+    {
+        var file = Plugin.Instance!.SettingsFile;
+        return Ok(file is null ? new { } : new { file.Path, file.Managed, file.Error });
+    }
+
     // ─── Libraries ───────────────────────────────────────────────────────────
 
     [HttpGet("libraries")]
