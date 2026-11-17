@@ -512,6 +512,54 @@ public class EnforcementStateTests
 
 public class EnforcementStateOwnershipTests
 {
+    /// <summary>
+    /// The configuration the fork of 1.12.0 wrote, as XmlSerializer wrote it: the links (every
+    /// resident's account), the enforcement's list and the login times must come through the
+    /// move to upstream's base; the old fork's own settings are ignored (the settings file
+    /// brings them again).
+    /// </summary>
+    [Fact]
+    public void The_configuration_of_the_old_fork_loads_with_its_links()
+    {
+        var user = Guid.NewGuid();
+        var xml = $"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+              <PublicUrl>https://media.example.org</PublicUrl>
+              <LoginButtonText>Mit dem Hauskonto anmelden</LoginButtonText>
+              <RequireGroupMapping>true</RequireGroupMapping>
+              <Providers>
+                <ProviderConfig>
+                  <Id>authentik</Id><Name>Haus</Name><Enabled>true</Enabled>
+                  <Authority>https://login.example.org/application/o/jellyfin/</Authority>
+                  <ClientId>jellyfin</ClientId><ClientType>Confidential</ClientType>
+                  <ConfidentialSecretRef>env:SSO_CLIENT_SECRET</ConfidentialSecretRef>
+                  <Scopes><string>openid</string></Scopes><GroupsClaim>groups</GroupsClaim>
+                  <GroupsFromUserInfo>false</GroupsFromUserInfo>
+                </ProviderConfig>
+              </Providers>
+              <GroupMappings>
+                <GroupMappingConfig><Group>residents</Group><LibraryIds /><AllLibraries>true</AllLibraries><IsAdministrator>false</IsAdministrator></GroupMappingConfig>
+              </GroupMappings>
+              <Links>
+                <LinkConfig><ProviderId>authentik</ProviderId><Sub>alice</Sub><JellyfinUserId>{user}</JellyfinUserId><LastLoginUtc>2026-11-02T12:00:00+00:00</LastLoginUtc></LinkConfig>
+              </Links>
+              <SeenGroups><string>residents</string></SeenGroups>
+              <DisabledByPolicy><guid>{user}</guid></DisabledByPolicy>
+            </PluginConfiguration>
+            """;
+
+        var config = (PluginConfiguration)new XmlSerializer(typeof(PluginConfiguration))
+            .Deserialize(new StringReader(xml.Trim()))!;
+
+        var link = Assert.Single(config.Links);
+        Assert.Equal(("authentik", "alice", user), (link.ProviderId, link.Sub, link.JellyfinUserId));
+        Assert.Equal(new DateTimeOffset(2026, 11, 2, 12, 0, 0, TimeSpan.Zero), link.LastLoginUtc);
+        Assert.Equal([user], config.DisabledByPolicy);
+        Assert.True(Assert.Single(config.GroupMappings).AllLibraries);
+        Assert.Equal("authentik", Assert.Single(config.Providers).Id);
+    }
+
     [Fact]
     public void A_saved_configuration_keeps_the_list_of_users_the_enforcement_disabled()
     {
