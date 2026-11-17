@@ -218,6 +218,8 @@ public sealed class AdminController : ControllerBase
                 return Conflict("That Jellyfin account is already linked for this provider.");
             }
 
+            // A login time comes from a login only: the enforcement weighs it against the feed.
+            link.LastLoginUtc = null;
             config.Links.Add(link);
             Plugin.Instance.SaveConfiguration();
         }

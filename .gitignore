@@ -5,3 +5,6 @@ obj/
 tests/runs/
 dist/
 __pycache__/
+
+# scripts/dotnet.sh (house): the NuGet cache
+.nuget/

@@ -41,6 +41,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             lock (ConfigurationLock)
             {
                 incoming.Links = Configuration.Links;
+                incoming.DisabledByPolicy = Configuration.DisabledByPolicy;
                 SettingsFile?.ApplyTo(incoming);
                 base.UpdateConfiguration(incoming);
             }

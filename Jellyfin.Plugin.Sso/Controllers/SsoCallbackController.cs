@@ -1,6 +1,7 @@
 using Microsoft.IdentityModel.Tokens;
 using Jellyfin.Plugin.Sso.Auth;
 using Jellyfin.Plugin.Sso.Configuration;
+using Jellyfin.Plugin.Sso.Enforcement;
 using Jellyfin.Plugin.Sso.Logging;
 using Jellyfin.Plugin.Sso.Oidc;
 using Jellyfin.Plugin.Sso.Provisioning;
@@ -40,6 +41,9 @@ public sealed class SsoCallbackController : SsoFlowController
     private readonly SessionRevoker _revoker;
     private readonly ILogger<SsoCallbackController> _logger;
 
+    private readonly PolicyState _policy;
+    private readonly EnforcementExecutor _enforcement;
+
     public SsoCallbackController(
         PendingStateStore states,
         OidcClientFactory oidc,
@@ -53,9 +57,13 @@ public sealed class SsoCallbackController : SsoFlowController
         IQuickConnect quickConnect,
         IUserManager users,
         SessionRevoker revoker,
+        PolicyState policy,
+        EnforcementExecutor enforcement,
         ILogger<SsoCallbackController> logger)
         : base(states, oidc)
     {
+        _policy = policy;
+        _enforcement = enforcement;
         _logoutSessions = logoutSessions;
         _claims = claims;
         _provisioner = provisioner;
@@ -155,6 +163,16 @@ public sealed class SsoCallbackController : SsoFlowController
 
             if (Revoked(pending, identity, userId))
                 return PlainText.BadRequest(RevokedMessage);
+
+            // Under the enforcement's lock, so a running round sees this login. The login time
+            // is recorded first: a login newer than the directory feed outweighs the feed. A
+            // user the enforcement disabled is enabled again (the provider just let the person
+            // in); one an admin disabled by hand stays disabled and Jellyfin refuses the login.
+            using (await _policy.LockAsync(ct).ConfigureAwait(false))
+            {
+                PolicyState.RecordLogin(provider.Id, identity.Sub, DateTimeOffset.UtcNow);
+                await _enforcement.EnableAfterLoginAsync(userId).ConfigureAwait(false);
+            }
 
             if (pending.QuickConnectCode is not null)
                 return AskToApproveQuickConnect(userId, username, pending.QuickConnectCode, stamp);
