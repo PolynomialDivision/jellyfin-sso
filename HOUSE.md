@@ -153,10 +153,19 @@ full Jellyfin log of the run is kept in `tests/runs/e2e/jellyfin.log`.
 ## Release into the house
 
 house-infra compiles the plugin on the host from this repository at a pinned commit
-(`stacks/jellyfin/stack.yml` → `build_sources.jellyfin_sso`). A new Jellyfin version:
+(`stacks/jellyfin/stack.yml` → `build_sources.jellyfin_sso`).
 
-1. `Jellyfin.Controller` and `Jellyfin.Model` in the csproj to the new server version.
-2. Unit tests, then `tests/e2e/run.sh <new jellyfin image@digest>`.
-3. Commit, push; in house-infra the new `jellyfin_base` and the new commit together.
+**Packages and new Jellyfin releases: house-infra's update run** (`make update-all`,
+`update-everything`; its docs/UPDATES.md, "The Jellyfin SSO plugin follows Jellyfin"). For the
+Jellyfin a round deploys it sets the csproj's package versions (`Jellyfin.*` to the first release
+of that series, e.g. 12.5.0 for any 12.5.x; the other packages to their newest release of the same
+major), runs the unit tests and `tests/e2e/run.sh <that Jellyfin image>` with house-infra's SDK
+(`DOTNET_SDK`), commits "Update packages for Jellyfin …" on `house`, pushes, and pins the commit
+together with the new `jellyfin_base`. When that fails, the new Jellyfin waits. The run touches
+this repository only when the checkout is clean, on `house`, not behind `origin/house`, and
+nothing but package versions in the csproj and `tests/` changed since the pinned commit.
+
+**By hand:** everything else in this repository (review, push, then the pin in house-infra), and
+a new major of Jellyfin (a new .NET: `TargetFramework`, the SDK here and in house-infra).
 
 Upstream changes: `git fetch upstream`, read the diff (it is the login path), merge, test.
