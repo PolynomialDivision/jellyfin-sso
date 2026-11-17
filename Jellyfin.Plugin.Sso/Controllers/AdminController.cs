@@ -111,6 +111,14 @@ public sealed class AdminController : ControllerBase
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(config.PublicAddress) && SsoAddress.Configured(config.PublicAddress) is null)
+        {
+            return BadRequest(
+                $"'{config.PublicAddress}' is not a public address. Use the address people open "
+                + "Jellyfin at, like https://jellyfin.example.com or https://example.com/jellyfin. "
+                + "Nothing was saved.");
+        }
+
         // A library is named by its Jellyfin id, and the sync parses those ids on every
         // login. An id that is not a GUID therefore turned every SSO login on the server
         // into a 500 — from a value that only this endpoint can introduce, and only by
