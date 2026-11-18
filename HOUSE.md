@@ -57,11 +57,17 @@ make e2e                                    # upstream's end-to-end suite (Playw
   `tests/house-e2e/run.sh` against the Jellyfin it deploys, commit on `house`, push, pin.
   Upstream builds against the first release of a major (`Jellyfin.Controller` 12.0.0) and tests
   every 12.x, so a new 12.x needs no change here; a new major (a new .NET) is done by hand.
-- **Upstream's changes:** the update report counts the commits of `upstream/main` not merged.
-  `git fetch upstream && git merge upstream/main` on `house` (conflicts, if any, are where
-  the settings file or the enforcement meet upstream: `ConfigurationRules`, `AdminController`,
-  `Plugin.cs`, `SsoCallbackController`), `make test`, `tests/house-e2e/run.sh`,
-  push, then the pin in house-infra. Read upstream's changes to the login path first.
+- **Upstream's releases:** house-infra's update run merges them itself (since 2026-11-18,
+  without a review): the newest tag `v<version>` on `upstream/main` not merged yet, only when
+  it merges cleanly, as "Merge upstream's v… (update run)" on `house`; then the same checks,
+  push, pin, version `<release>.1`, deploy. A failure takes the merge back and waits with a
+  NEEDS YOU. Commits between releases wait for the next one.
+- **By hand:** a release that does not merge cleanly (conflicts, if any, are where the settings
+  file or the enforcement meet upstream: `ConfigurationRules`, `AdminController`, `Plugin.cs`,
+  `SsoCallbackController`): `git merge <tag>` on `house`, `scripts/dotnet.sh test
+  tests/Jellyfin.Plugin.Sso.Tests`, `tests/house-e2e/run.sh`, push, then the pin and version in
+  house-infra. So is every change of the fork's own (anything outside `tests/` that is not a
+  package version or a clean release merge): a run never ships it unpinned.
 
 ## Release into the house
 
