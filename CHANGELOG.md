@@ -12,6 +12,40 @@ in the few lines somebody reads before clicking.
 Issue and pull request numbers are given bare rather than as links: the catalog renders
 Markdown, so a link per finding would cost more characters than the lines themselves.
 
+## 1.12.25
+
+- **Security: a code is only redeemed at the provider that issued it.** The callback now
+  checks RFC 9207's `iss`; a second, hostile provider on the same server could otherwise
+  receive another provider's code where that provider accepts callbacks by pattern (#325).
+- **Security: a group mapping without a group no longer matches.** ID-token groups that
+  were not strings became an empty group, which matched a half-filled mapping row (#330).
+- **Security: a provider is held to a deadline and a size.** A slow provider no longer
+  turns a login into a 500, answers over 1 MiB are refused, and over-long group names are
+  not stored (#321, #322, #323).
+- **Security: names that only look like another account's are caught.** Invisible
+  characters are removed before the existing-account check, also where the name falls back
+  to the subject (#324, #331).
+- **Fixes.** Host values are checked to be host names (#327), three IPv6 ranges are added
+  to the outbound address check (#328), and a carriage return is no longer stored (#329).
+
+On upgrade: a group mapping without a group must be filled in or removed before the
+settings can be saved again; the page says which one.
+
+## 1.12.24
+
+- **Security: new accounts start without Live TV and channels.** Jellyfin turns on Live
+  TV access, Live TV management and every channel for a new user. Where a provider does
+  not set permissions from groups, an account the plugin created kept them, so anyone the
+  provider admitted could cancel or schedule recordings (#317).
+- **Security: forged logout tokens no longer empty the key cache.** A back-channel logout
+  token naming an unknown key made the plugin drop the provider's cached keys before
+  fetching new ones; one failed fetch then stopped every login. The cached keys now stay
+  until new ones have arrived (#316).
+
+On upgrade: accounts created before this version keep what they have. If you use channel
+plugins, give new SSO users channels in Jellyfin's user settings; groups that grant Live
+TV still do.
+
 ## 1.12.23
 
 - **Fix: a restart could empty the plugin's settings.** A control character in a group
