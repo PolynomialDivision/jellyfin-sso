@@ -332,6 +332,22 @@ public sealed class PermissionSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Deletion_is_granted_when_one_of_several_matched_groups_grants_it()
+    {
+        Map("media", admin: false, MoviesId);
+        _harness.Configuration.GroupMappings.Add(new GroupMappingConfig
+        {
+            Group = "curators",
+            LibraryIds = [MoviesId.ToString("N")],
+            EnableContentDeletion = true,
+        });
+
+        await _sync.SyncAsync(_userId, Identity("media", "curators"));
+
+        Assert.True(CapturedPolicy().EnableContentDeletion);
+    }
+
+    [Fact]
     public async Task A_group_that_no_longer_grants_deletion_takes_it_away_again()
     {
         var user = ExistingUser(admin: false);
@@ -473,6 +489,26 @@ public sealed class PermissionSyncTests : IDisposable
         await _sync.SyncAsync(user.Id, Identity("media"));
 
         Assert.False(CapturedPolicy().IsAdministrator);
+    }
+
+    [Fact]
+    public async Task A_disabled_administrator_does_not_count_as_the_one_that_remains()
+    {
+        // The setup wizard's local administrator, switched off once SSO worked (#341). If it
+        // counted, a mistyped admin mapping would leave nobody who can sign in as an admin.
+        Map("jellyfin-adminz", true);
+        var user = ExistingUser(admin: true);
+        var disabledAdmin = new User(
+            "root",
+            "Emby.Server.Implementations.Library.DefaultAuthenticationProvider",
+            "Emby.Server.Implementations.Library.DefaultPasswordResetProvider");
+        disabledAdmin.SetPermission(PermissionKind.IsAdministrator, true);
+        disabledAdmin.SetPermission(PermissionKind.IsDisabled, true);
+        OtherUsers(user, disabledAdmin);
+
+        await _sync.SyncAsync(user.Id, Identity("jellyfin-admins"));
+
+        Assert.True(CapturedPolicy().IsAdministrator);
     }
 
     [Fact]
